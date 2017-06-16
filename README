@@ -1,0 +1,6 @@
+freezebot
+=========
+
+Simple GitHub API integration to lock and label old, inactive, and closed
+issues.
+
