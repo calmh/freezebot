@@ -1,0 +1,15 @@
+[
+  {
+    "owner": "syncthing",
+    "repos": ["apt-web", "docs", "discosrv", "relaysrv", "syncthing", "website"],
+    "directives": [
+      {
+        "state": "closed",
+        "daysClosed": 365,
+        "daysNotUpdated": 180,
+        "label": "frozen-due-to-age",
+        "lock": true
+      }
+    ]
+  }
+]

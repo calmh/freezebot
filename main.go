@@ -1,7 +1,9 @@
 package main
 
 import (
+	"_go/src/io/ioutil"
 	"context"
+	"encoding/json"
 	"flag"
 	"log"
 	"os"
@@ -13,17 +15,38 @@ import (
 
 const retries = 5
 
+type configEntry struct {
+	Owner      string
+	Repos      []string
+	Directives []configDirective
+}
+
+type configDirective struct {
+	State          string
+	DaysClosed     int
+	DaysNotUpdated int
+	Label          string
+	Lock           bool
+}
+
 func main() {
 	token := flag.String("token", os.Getenv("GITHUB_TOKEN"), "GitHub token")
-	owner := flag.String("owner", "", "Owner")
-	repo := flag.String("repo", "", "Repository")
-	closedDays := flag.Int("closed", 365, "Closed cutoff, in days")
-	untouchedDays := flag.Int("untouched", 180, "Untouched cutoff, in days")
-	label := flag.String("label", "", "Label to add")
-	lock := flag.Bool("lock", false, "Lock issues")
+	cfgFile := flag.String("config", "config.json", "Configuration file")
 	flag.Parse()
 
 	log.SetOutput(os.Stdout)
+
+	bs, err := ioutil.ReadFile(*cfgFile)
+	if err != nil {
+		log.Println("Reading config:", err)
+		os.Exit(1)
+	}
+
+	var cfgs []configEntry
+	if err := json.Unmarshal(bs, &cfgs); err != nil {
+		log.Println("Reading config:", err)
+		os.Exit(1)
+	}
 
 	ctx := context.Background()
 	ts := oauth2.StaticTokenSource(
@@ -32,87 +55,100 @@ func main() {
 	tc := oauth2.NewClient(ctx, ts)
 	client := github.NewClient(tc)
 
-	if *owner == "" {
-		log.Println("Need -owner parameter")
-		os.Exit(2)
-	}
-
-	if *repo != "" {
-		handleOldIssues(ctx, client, *owner, *repo, *closedDays, *untouchedDays, *lock, *label)
-		return
-	}
-
-	opts := &github.RepositoryListOptions{
-		ListOptions: github.ListOptions{
-			PerPage: 100,
-		},
-	}
-
-	for {
-		rs, resp, err := client.Repositories.List(ctx, *owner, opts)
-		if err != nil {
-			log.Println(err)
-			os.Exit(1)
+	for _, cfg := range cfgs {
+		if cfg.Owner == "" {
+			log.Println("Every config entry must set `owner`")
+			os.Exit(2)
 		}
 
-		for _, repo := range rs {
-			log.Println("Processing", repo.GetFullName())
-			handleOldIssues(ctx, client, *owner, repo.GetName(), *closedDays, *untouchedDays, *lock, *label)
+		for _, repo := range cfg.Repos {
+			log.Printf("Processing %s/%s", cfg.Owner, repo)
+			handleRepo(ctx, client, cfg.Owner, repo, cfg.Directives)
+		}
+		if len(cfg.Repos) > 0 {
+			// We're done
+			continue
 		}
 
-		if resp.NextPage == 0 {
-			break
+		listOpts := &github.RepositoryListOptions{
+			ListOptions: github.ListOptions{
+				PerPage: 100,
+			},
 		}
-		opts.Page = resp.NextPage
+
+		for {
+			rs, resp, err := client.Repositories.List(ctx, cfg.Owner, listOpts)
+			if err != nil {
+				log.Println(err)
+				os.Exit(1)
+			}
+
+			for _, repo := range rs {
+				log.Println("Processing", repo.GetFullName())
+				handleRepo(ctx, client, cfg.Owner, repo.GetName(), cfg.Directives)
+			}
+
+			if resp.NextPage == 0 {
+				break
+			}
+			listOpts.Page = resp.NextPage
+		}
 	}
 }
 
-func handleOldIssues(ctx context.Context, client *github.Client, owner, repo string, closedDays, untouchedDays int, lock bool, label string) {
-	opts := &github.IssueListByRepoOptions{
-		State: "closed",
-		ListOptions: github.ListOptions{
-			PerPage: 100,
-		},
-	}
-
-	for {
-		is, resp, err := client.Issues.ListByRepo(ctx, owner, repo, opts)
-		if err != nil {
-			log.Println(err)
-			os.Exit(1)
+func handleRepo(ctx context.Context, client *github.Client, owner, repo string, directives []configDirective) {
+	for _, directive := range directives {
+		opts := &github.IssueListByRepoOptions{
+			ListOptions: github.ListOptions{
+				PerPage: 100,
+			},
 		}
 
-		for _, i := range is {
-			if daysSince(i.GetClosedAt()) < closedDays {
-				continue
-			}
-			if i.GetLocked() {
-				continue
-			}
-			if daysSince(i.GetUpdatedAt()) < untouchedDays && !contains(i.Labels, label) {
-				continue
-			}
-
-			log.Printf("Handling issue %d: %s\n", i.GetNumber(), i.GetTitle())
-
-			if label != "" && !contains(i.Labels, label) {
-				labelIssue(ctx, client, owner, repo, i.GetNumber(), label)
-			}
-
-			if lock {
-				lockIssue(ctx, client, owner, repo, i.GetNumber())
-			}
+		if directive.State != "" {
+			opts.State = directive.State
 		}
 
-		if resp.NextPage == 0 {
-			break
+		for {
+			is, resp, err := client.Issues.ListByRepo(ctx, owner, repo, opts)
+			if err != nil {
+				log.Println(err)
+				os.Exit(1)
+			}
+
+			for _, i := range is {
+				if i.GetLocked() {
+					// Never touch locked issues
+					continue
+				}
+				if directive.DaysClosed > 0 && daysSince(i.GetClosedAt()) < directive.DaysClosed {
+					// Check days closed if set
+					continue
+				}
+				if directive.DaysNotUpdated > 0 && daysSince(i.GetUpdatedAt()) < directive.DaysNotUpdated {
+					// Check days not updated if set
+					continue
+				}
+
+				if directive.Label != "" && !contains(i.Labels, directive.Label) {
+					log.Printf("Labeling issue %d %q", i.GetNumber(), directive.Label)
+					labelIssue(ctx, client, owner, repo, i.GetNumber(), directive.Label)
+				}
+
+				if directive.Lock {
+					log.Printf("Locking issue %d", i.GetNumber())
+					lockIssue(ctx, client, owner, repo, i.GetNumber())
+				}
+			}
+
+			if resp.NextPage == 0 {
+				break
+			}
+			opts.Page = resp.NextPage
 		}
-		opts.Page = resp.NextPage
 	}
 }
 
 func labelIssue(ctx context.Context, client *github.Client, owner, repo string, number int, label string) {
-	log.Println("Labeling issue", number)
 	var err error
 	for i := 0; i < retries; i++ {
 		_, _, err = client.Issues.AddLabelsToIssue(ctx, owner, repo, number, []string{label})
@@ -129,7 +165,6 @@ func labelIssue(ctx context.Context, client *github.Client, owner, repo string, 
 }
 
 func lockIssue(ctx context.Context, client *github.Client, owner, repo string, number int) {
-	log.Println("Locking issue", number)
 	var err error
 	for i := 0; i < retries; i++ {
 		_, err := client.Issues.Lock(ctx, owner, repo, number)
