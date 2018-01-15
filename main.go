@@ -1,11 +1,11 @@
 package main
 
 import (
-	"_go/src/io/ioutil"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"os"
 	"time"
