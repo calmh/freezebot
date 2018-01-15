@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"time"
@@ -22,6 +23,7 @@ type configEntry struct {
 }
 
 type configDirective struct {
+	Query          string
 	State          string
 	DaysClosed     int
 	DaysNotUpdated int
@@ -63,7 +65,7 @@ func main() {
 
 		for _, repo := range cfg.Repos {
 			log.Printf("Processing %s/%s", cfg.Owner, repo)
-			handleRepo(ctx, client, cfg.Owner, repo, cfg.Directives)
+			handleRepoIssues(ctx, client, cfg.Owner, repo, cfg.Directives)
 		}
 		if len(cfg.Repos) > 0 {
 			// We're done
@@ -85,7 +87,7 @@ func main() {
 
 			for _, repo := range rs {
 				log.Println("Processing", repo.GetFullName())
-				handleRepo(ctx, client, cfg.Owner, repo.GetName(), cfg.Directives)
+				handleRepoIssues(ctx, client, cfg.Owner, repo.GetName(), cfg.Directives)
 			}
 
 			if resp.NextPage == 0 {
@@ -96,55 +98,110 @@ func main() {
 	}
 }
 
-func handleRepo(ctx context.Context, client *github.Client, owner, repo string, directives []configDirective) {
+func handleRepoIssues(ctx context.Context, client *github.Client, owner, repo string, directives []configDirective) {
 	for _, directive := range directives {
-		opts := &github.IssueListByRepoOptions{
-			ListOptions: github.ListOptions{
-				PerPage: 100,
-			},
+		issues, err := findIssues(ctx, client, owner, repo, directive)
+		if err != nil {
+			log.Println("Finding issues:", err)
+			os.Exit(1)
 		}
 
-		if directive.State != "" {
-			opts.State = directive.State
+		for _, i := range issues {
+			handleIssue(ctx, client, owner, repo, i, directive)
+		}
+	}
+}
+
+func findIssues(ctx context.Context, client *github.Client, owner, repo string, directive configDirective) ([]github.Issue, error) {
+	if directive.Query != "" {
+		return findIssuesByQuery(ctx, client, owner, repo, directive)
+	}
+	return findIssuesByList(ctx, client, owner, repo, directive)
+}
+
+func findIssuesByList(ctx context.Context, client *github.Client, owner, repo string, directive configDirective) ([]github.Issue, error) {
+	opts := &github.IssueListByRepoOptions{
+		ListOptions: github.ListOptions{
+			PerPage: 100,
+		},
+	}
+
+	if directive.State != "" {
+		opts.State = directive.State
+	}
+
+	var res []github.Issue
+
+	for {
+		is, resp, err := client.Issues.ListByRepo(ctx, owner, repo, opts)
+		if err != nil {
+			return nil, err
 		}
 
-		for {
-			is, resp, err := client.Issues.ListByRepo(ctx, owner, repo, opts)
-			if err != nil {
-				log.Println(err)
-				os.Exit(1)
-			}
-
-			for _, i := range is {
-				if i.GetLocked() {
-					// Never touch locked issues
-					continue
-				}
-				if directive.DaysClosed > 0 && daysSince(i.GetClosedAt()) < directive.DaysClosed {
-					// Check days closed if set
-					continue
-				}
-				if directive.DaysNotUpdated > 0 && daysSince(i.GetUpdatedAt()) < directive.DaysNotUpdated {
-					// Check days not updated if set
-					continue
-				}
-
-				if directive.Label != "" && !contains(i.Labels, directive.Label) {
-					log.Printf("Labeling issue %d %q", i.GetNumber(), directive.Label)
-					labelIssue(ctx, client, owner, repo, i.GetNumber(), directive.Label)
-				}
-
-				if directive.Lock {
-					log.Printf("Locking issue %d", i.GetNumber())
-					lockIssue(ctx, client, owner, repo, i.GetNumber())
-				}
-			}
-
-			if resp.NextPage == 0 {
-				break
-			}
-			opts.Page = resp.NextPage
+		for _, i := range is {
+			res = append(res, *i)
 		}
+
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+
+	return res, nil
+}
+
+func findIssuesByQuery(ctx context.Context, client *github.Client, owner, repo string, directive configDirective) ([]github.Issue, error) {
+	opts := &github.SearchOptions{
+		Sort:  "created",
+		Order: "asc",
+		ListOptions: github.ListOptions{
+			PerPage: 100,
+		},
+	}
+
+	query := fmt.Sprintf("%s repo:%s/%s", directive.Query, owner, repo)
+	var res []github.Issue
+
+	for {
+		is, resp, err := client.Search.Issues(ctx, query, opts)
+		if err != nil {
+			return nil, err
+		}
+
+		res = append(res, is.Issues...)
+
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+
+	return res, nil
+}
+
+func handleIssue(ctx context.Context, client *github.Client, owner, repo string, i github.Issue, directive configDirective) {
+	if i.GetLocked() {
+		// Never touch locked issues
+		return
+	}
+	if directive.DaysClosed > 0 && daysSince(i.GetClosedAt()) < directive.DaysClosed {
+		// Check days closed if set
+		return
+	}
+	if directive.DaysNotUpdated > 0 && daysSince(i.GetUpdatedAt()) < directive.DaysNotUpdated {
+		// Check days not updated if set
+		return
+	}
+
+	if directive.Label != "" && !contains(i.Labels, directive.Label) {
+		log.Printf("Labeling issue %d %q", i.GetNumber(), directive.Label)
+		labelIssue(ctx, client, owner, repo, i.GetNumber(), directive.Label)
+	}
+
+	if directive.Lock {
+		log.Printf("Locking issue %d", i.GetNumber())
+		lockIssue(ctx, client, owner, repo, i.GetNumber())
 	}
 }
 

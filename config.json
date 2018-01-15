@@ -1,7 +1,14 @@
 [
   {
     "owner": "syncthing",
-    "repos": ["apt-web", "docs", "discosrv", "relaysrv", "syncthing", "website"],
+    "repos": [
+      "apt-web",
+      "docs",
+      "discosrv",
+      "relaysrv",
+      "syncthing",
+      "website"
+    ],
     "directives": [
       {
         "state": "closed",

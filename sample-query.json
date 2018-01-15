@@ -1,0 +1,14 @@
+[
+  {
+    "owner": "syncthing",
+    "repos": [
+      "syncthing"
+    ],
+    "directives": [
+      {
+        "query": "\":ok_hand: Merged as\" in:comments is:pr is:closed",
+        "label": "pr-merged"
+      }
+    ]
+  }
+]
