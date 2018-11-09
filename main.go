@@ -29,6 +29,8 @@ type configDirective struct {
 	DaysNotUpdated int
 	Label          string
 	Lock           bool
+	Close          bool
+	CloseComment   string
 }
 
 func main() {
@@ -199,6 +201,15 @@ func handleIssue(ctx context.Context, client *github.Client, owner, repo string,
 		labelIssue(ctx, client, owner, repo, i.GetNumber(), directive.Label)
 	}
 
+	if directive.Close && i.GetState() != "closed" {
+		if directive.CloseComment != "" {
+			log.Printf("Commenting on issue %d", i.GetNumber())
+			commentIssue(ctx, client, owner, repo, i.GetNumber(), directive.CloseComment)
+		}
+		log.Printf("Closing issue %d", i.GetNumber())
+		closeIssue(ctx, client, owner, repo, i.GetNumber())
+	}
+
 	if directive.Lock {
 		log.Printf("Locking issue %d", i.GetNumber())
 		lockIssue(ctx, client, owner, repo, i.GetNumber())
@@ -224,7 +235,7 @@ func labelIssue(ctx context.Context, client *github.Client, owner, repo string, 
 func lockIssue(ctx context.Context, client *github.Client, owner, repo string, number int) {
 	var err error
 	for i := 0; i < retries; i++ {
-		_, err := client.Issues.Lock(ctx, owner, repo, number)
+		_, err := client.Issues.Lock(ctx, owner, repo, number, nil)
 		if err == nil {
 			return
 		}
@@ -233,6 +244,38 @@ func lockIssue(ctx context.Context, client *github.Client, owner, repo string, n
 	}
 	if err != nil {
 		log.Printf("Locking issue %d: %v\n", number, err)
+		os.Exit(1)
+	}
+}
+
+func closeIssue(ctx context.Context, client *github.Client, owner, repo string, number int) {
+	var err error
+	for i := 0; i < retries; i++ {
+		_, _, err := client.Issues.Edit(ctx, owner, repo, number, &github.IssueRequest{State: github.String("closed")})
+		if err == nil {
+			return
+		}
+		log.Printf("Closing issue %d: %v (retrying)\n", number, err)
+		time.Sleep(time.Duration(i) * time.Second)
+	}
+	if err != nil {
+		log.Printf("Closing issue %d: %v\n", number, err)
+		os.Exit(1)
+	}
+}
+
+func commentIssue(ctx context.Context, client *github.Client, owner, repo string, number int, comment string) {
+	var err error
+	for i := 0; i < retries; i++ {
+		_, _, err := client.Issues.CreateComment(ctx, owner, repo, number, &github.IssueComment{Body: github.String(comment)})
+		if err == nil {
+			return
+		}
+		log.Printf("Commenting on issue %d: %v (retrying)\n", number, err)
+		time.Sleep(time.Duration(i) * time.Second)
+	}
+	if err != nil {
+		log.Printf("Commenting on issue %d: %v\n", number, err)
 		os.Exit(1)
 	}
 }
