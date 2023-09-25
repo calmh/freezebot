@@ -4,8 +4,6 @@
     "repos": [
       "apt-web",
       "docs",
-      "discosrv",
-      "relaysrv",
       "syncthing",
       "website"
     ],
@@ -16,12 +14,6 @@
         "daysNotUpdated": 180,
         "label": "frozen-due-to-age",
         "lock": true
-      },
-      {
-        "query": "is:pr is:open -label:slow-pr",
-        "daysNotUpdated": 90,
-        "close": true,
-        "closeComment": ":robot: beep boop\n\nI'm going to close this pull request as it has been idle for more than 90 days.\n\nThis is not a rejection, merely a removal from the list of active pull requests that is periodically reviewed by humans. The pull request can be reopened when there is new activity, and merged once any remaining issues are resolved.\n\nTo permanently exempt this PR from bot nagging, add the `slow-pr` label.\n"
       }
     ]
   }
